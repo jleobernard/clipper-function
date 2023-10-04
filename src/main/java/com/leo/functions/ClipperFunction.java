@@ -37,6 +37,7 @@ public class ClipperFunction implements HttpFunction {
             .filter(s -> s != null && !s.trim().isEmpty())
             .map(String::trim)
             .distinct().collect(Collectors.toList());
+    private final SupabaseClient supabaseClient;
 
     public ClipperFunction() {
         workingDir = System.getenv("WORKING_DIR");
@@ -55,6 +56,20 @@ public class ClipperFunction implements HttpFunction {
         } else {
             maxDuration = Integer.parseInt(strMaxDuration);
         }
+        this.supabaseClient = new SupabaseClient(
+                getMandatoryEnv("SUPABASE_USER_EMAIL"),
+                getMandatoryEnv("SUPABASE_USER_PWD"),
+                getMandatoryEnv("SUPABASE_API_KEY"),
+                getMandatoryEnv("SUPABASE_URL")
+        );
+    }
+
+    private String getMandatoryEnv(String key) {
+        final String value = System.getenv(key);
+        if(value == null || value.isBlank()) {
+            throw new RuntimeException("missing.env.var." + key);
+        }
+        return value;
     }
 
     @Override
@@ -84,8 +99,27 @@ public class ClipperFunction implements HttpFunction {
             final String videoName = videosParts.getKey();
             getVideo(videoName);
             return cutVideo(videoName, videosParts.getValue()).stream();
-        }).collect(Collectors.toList());
+        })
+        .collect(Collectors.toList());
+        updateJobs(partResponses);
         return new ClipperResponse(partResponses, partResponses.stream().anyMatch(resp -> !resp.succeeded));
+    }
+
+    private void updateJobs(List<PartResponse> partResponses) {
+        try {
+            supabaseClient.login();
+            for (PartResponse partResponse : partResponses) {
+                try {
+                    final String state = partResponse.succeeded ? "OK" : "KO";
+                    supabaseClient.updateJobStateAndProgress(partResponse.video + "_" + partResponse.from + "_" + partResponse.to + ".mp4", state, 100);
+                } catch (SupabaseException se) {
+
+                }
+            }
+        } catch (SupabaseException e) {
+            System.err.println("An error occurred while updating job statuses");
+            e.printStackTrace();
+        }
     }
 
     private List<PartResponse> cutVideo(String videoName, List<PartRequest> parts) {
