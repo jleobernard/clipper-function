@@ -5,6 +5,9 @@ import com.google.cloud.functions.HttpFunction;
 import com.google.cloud.functions.HttpRequest;
 import com.google.cloud.functions.HttpResponse;
 import com.google.cloud.storage.*;
+import org.apache.commons.exec.CommandLine;
+import org.apache.commons.exec.DefaultExecutor;
+import org.apache.commons.exec.ExecuteWatchdog;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -97,8 +100,7 @@ public class ClipperFunction implements HttpFunction {
                 Collectors.groupingBy(p -> p.video))
         .entrySet().stream().flatMap(videosParts -> {
             final String videoName = videosParts.getKey();
-            getVideo(videoName);
-            return cutVideo(videoName, videosParts.getValue()).stream();
+            return cutVideo(videoName, videosParts.getValue(), clipperRequest.accessToken).stream();
         })
         .collect(Collectors.toList());
         updateJobs(partResponses);
@@ -122,8 +124,10 @@ public class ClipperFunction implements HttpFunction {
         }
     }
 
-    private List<PartResponse> cutVideo(String videoName, List<PartRequest> parts) {
-        final String sourcePath = Paths.get(workingDir, videoName + ".mp4").toAbsolutePath().toString();
+    private List<PartResponse> cutVideo(final String videoName,
+                                        final List<PartRequest> parts,
+                                        final String accessToken) {
+        final String videoUrl = "https://" + bucketName + ".storage.googleapis.com/videos/" + videoName + "/" + videoName + ".mp4?access_token=" + accessToken;
         return parts.stream()
             .map(part -> {
                 final int from = part.from;
@@ -135,24 +139,31 @@ public class ClipperFunction implements HttpFunction {
                 } else if(to - from > maxDuration) {
                     System.err.println("Error while clipping " + videoName + " from " + from + " to " + to + ": range too large");
                 } else if(storage.get(bucketName, blobName) == null) {
+                    System.out.println("Clipping " +videoName + "_" + from + "_" + to);
                     final Path pathToPartFile = Paths.get(workingDir, videoName + "_" + from + "_" + to + ".mp4");
-                    final Process process;
+                    final CommandLine commandLine = new CommandLine("ffmpeg")
+                            .addArgument("-ss")
+                            .addArgument(String.valueOf(from))
+                            .addArgument("-to")
+                            .addArgument(String.valueOf(to))
+                            .addArgument("-i")
+                            .addArgument(videoUrl)
+                            .addArgument("-c:v")
+                            .addArgument("libx264")
+                            .addArgument(pathToPartFile.toAbsolutePath().toString());
                     try {
-                        process = Runtime.getRuntime()
-                                .exec("ffmpeg -i " + sourcePath + " -ss " + from + " -to " + to + " -c:v libx264 " + pathToPartFile.toAbsolutePath().toString());
-                        final BufferedReader reader = new BufferedReader(
-                                new InputStreamReader(process.getInputStream()));
-                        String line;
-                        while ((line = reader.readLine()) != null) {
-                            System.out.println("[FFMPEG] " + line);
-                        }
-                        final boolean exited = process.waitFor(timeout, TimeUnit.MILLISECONDS);
-                        if (exited && process.exitValue() == 0) {
+                        DefaultExecutor executor = new DefaultExecutor();
+                        executor.setExitValue(0);
+                        ExecuteWatchdog watchdog = new ExecuteWatchdog(60000);
+                        executor.setWatchdog(watchdog);
+                        int exitValue = executor.execute(commandLine);
+                        if (exitValue == 0) {
+                            System.out.println("Clipping succeeded");
                             succeeded = uploadPart(videoName, from, to, pathToPartFile);
                         } else {
                             System.err.println("Error while clipping " + videoName + " from " + from + " to " + to + " ffmpeg");
                         }
-                    } catch (IOException | InterruptedException e) {
+                    } catch (Exception e) {
                         System.err.println("Error while clipping " + videoName + " from " + from + " to " + to);
                         e.printStackTrace();
                     }
@@ -188,20 +199,6 @@ public class ClipperFunction implements HttpFunction {
         }
     }
 
-
-
-    private void getVideo(String videoName) {
-        Path targetPath = Paths.get(workingDir, videoName + ".mp4");
-        if(Files.exists(targetPath)) {
-            System.out.println(targetPath + " already downloaded");
-        } else {
-            System.out.println("Download " + videoName + "...");
-            final Blob blob = storage.get(BlobId.of(bucketName, "videos/" + videoName + "/" + videoName + ".mp4"));
-            blob.downloadTo(targetPath);
-            System.out.println("..." + videoName + " downloaded");
-        }
-    }
-
     private static String getAllowOrigin(final String requestOrigin) {
         if(requestOrigin == null || requestOrigin.isBlank()) {
             return domains.get(0);
@@ -215,7 +212,7 @@ public class ClipperFunction implements HttpFunction {
 
     public static class ClipperRequest {
         public List<PartRequest> parts;
-
+        public String accessToken;
     }
 
     public static class PartRequest {
