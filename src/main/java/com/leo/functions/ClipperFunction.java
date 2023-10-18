@@ -137,15 +137,15 @@ public class ClipperFunction implements HttpFunction {
                 if(to <= from) {
                     System.err.println("Error while clipping " + videoName + " from " + from + " to " + to + ": boundaries reversed");
                 } else if(to - from > maxDuration) {
-                    System.err.println("Error while clipping " + videoName + " from " + from + " to " + to + ": range too large");
+                    System.err.println("Error while clipping " + videoName + " from " + from + " to " + to +  ": range too large");
                 } else if(storage.get(bucketName, blobName) == null) {
                     System.out.println("Clipping " +videoName + "_" + from + "_" + to);
                     final Path pathToPartFile = Paths.get(workingDir, videoName + "_" + from + "_" + to + ".mp4");
                     final CommandLine commandLine = new CommandLine("ffmpeg")
                             .addArgument("-ss")
                             .addArgument(String.valueOf(from))
-                            .addArgument("-to")
-                            .addArgument(String.valueOf(to))
+                            .addArgument("-t")
+                            .addArgument(String.valueOf(to - from))
                             .addArgument("-i")
                             .addArgument(videoUrl)
                             .addArgument("-c:v")
